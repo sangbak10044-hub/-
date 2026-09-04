@@ -333,6 +333,7 @@
   .growth-tooltip.tip-left{top:50%;right:calc(100% + 12px);left:auto;transform:translateY(-50%);}
   .growth-tooltip.tip-left::after{content:"";position:absolute;top:50%;left:100%;transform:translateY(-50%);border:6px solid transparent;border-left-color:#1E2761;}
   .has-tip:hover .growth-tooltip{display:block;}
+  .has-tip.tip-open .growth-tooltip{display:block;}
   .growth-tooltip .gt-title{font-weight:700;color:#fff;margin-bottom:8px;font-size:13.5px;}
   .growth-tooltip .gt-row{margin-bottom:7px;}
   .growth-tooltip .gt-row span{display:block;color:#CADCFC;}
@@ -431,6 +432,14 @@
     .kpi-grid{grid-template-columns:1fr;}
     .product-grid{grid-template-columns:1fr;}
   }
+  /* 인쇄/PDF 저장용 - 필터·버튼 등 화면 조작용 요소는 숨기고, 카드가 페이지 중간에서 잘리지 않게 함 */
+  @media print{
+    body{background:#fff;}
+    .filterbar,.btn-reset,.sync-panel,.updated-badge,.cal-popup,.mall-popup,.growth-tooltip,.tip-hint{display:none !important;}
+    .wrap{max-width:none;}
+    .section,.channel-card,.card,.kpi-card{break-inside:avoid;page-break-inside:avoid;}
+    a[href]::after{content:"";}
+  }
 </style>
 </head>
 <body>
@@ -480,6 +489,7 @@
       <button type="button" id="mallJumpBtn" class="cal-trigger">전체</button>
     </div>
     <div class="spacer"></div>
+    <button class="btn-reset" id="exportCsvBtn" title="현재 필터(행사월·채널·브랜드·판매점) 기준으로 화면에 표시된 행사 목록을 CSV로 내려받습니다.">현재 화면 CSV 내보내기</button>
     <button class="btn-reset" id="resetBtn">필터 초기화</button>
   </div>
 
@@ -4121,6 +4131,39 @@ function parseCsv(text){
   return rows;
 }
 
+function csvField(v){
+  const s = v === null || v === undefined ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+
+// 현재 필터(행사월·채널·브랜드·판매점) 조건으로 화면에 표시 중인 행사 목록을 CSV로 내려받음.
+// parseCsv()가 읽는 컬럼 순서와 맞춰뒀기 때문에, 이 파일을 구글시트에 붙여넣으면 그대로 "CSV 연동"으로도 다시 불러올 수 있음.
+function exportCurrentViewCsv(){
+  const rows = [...filteredEvents(), ...pendingEvents()];
+  const header = ["행사명","월","채널","판매점","종료일","계획매출(억)","실적매출(억)","계획이익(억)","실적이익(억)","상태"];
+  const lines = [header.map(csvField).join(",")];
+  rows.forEach(e => {
+    const settled = isSettled(e);
+    lines.push([
+      e.name, e.month, e.channel, e.mall || "", e.endDate || "",
+      e.revenuePlan ?? "", settled ? (e.revenueActual ?? "") : (e.partialRevenue ?? ""),
+      e.profitPlan ?? "", settled ? (e.profitActual ?? "") : (e.partialProfit ?? ""),
+      settled ? "정산완료" : "진행중",
+    ].map(csvField).join(","));
+  });
+  const blob = new Blob(["﻿" + lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0,10);
+  a.href = url;
+  a.download = `행사실적_${state.channel}_${state.month}_${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+document.getElementById("exportCsvBtn").onclick = exportCurrentViewCsv;
+
 let refreshTimer = null;
 const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5분마다 자동 재확인
 
@@ -4185,10 +4228,7 @@ document.querySelectorAll(".rule-toggle").forEach(btn=>{
 
 populateFilters();
 // 툴팁이 화면 좌우 경계를 넘어가면(예: 맨 왼쪽 칸의 tip-left 툴팁) 원래 방향은 유지한 채 화면 안쪽으로만 살짝 밀어서 잘리지 않게 보정
-document.addEventListener("mouseover", (e) => {
-  const host = e.target.closest(".has-tip");
-  if (!host) return;
-  const tip = host.querySelector(".growth-tooltip");
+function clampTooltip(tip){
   if (!tip || tip.dataset.clamped === "1") return;
   requestAnimationFrame(() => {
     const rect = tip.getBoundingClientRect();
@@ -4199,6 +4239,22 @@ document.addEventListener("mouseover", (e) => {
     if (shiftX !== 0) tip.style.transform = `translate(${shiftX}px, -50%)`;
     tip.dataset.clamped = "1";
   });
+}
+document.addEventListener("mouseover", (e) => {
+  const host = e.target.closest(".has-tip");
+  if (!host) return;
+  clampTooltip(host.querySelector(".growth-tooltip"));
+});
+// 마우스오버(hover)가 안 되는 터치기기(태블릿·휴대폰으로 보고할 때) 대응 - 탭하면 열리고, 다른 곳을 탭하면 닫힘
+document.addEventListener("click", (e) => {
+  const host = e.target.closest(".has-tip");
+  document.querySelectorAll(".has-tip.tip-open").forEach(open => {
+    if (open !== host) open.classList.remove("tip-open");
+  });
+  if (!host) return;
+  e.preventDefault();
+  const nowOpen = host.classList.toggle("tip-open");
+  if (nowOpen) clampTooltip(host.querySelector(".growth-tooltip"));
 });
 renderAll();
 setUpdatedNow();
