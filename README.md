@@ -183,6 +183,38 @@ CSS 변수(`:root`)에 색상 톤이 몰려있음. 헤더 배너 + KPI 카드는
 이 전체 과정이 지금은 사람(저)이 매번 손으로 스크립트를 새로 짜는 방식이라,
 자동화 파이프라인으로 만드는 게 다음 단계로 좋을 것 같아요.
 
+### 6-1. `scripts/update_dashboard_data.py` (Claude Code에서 추가한 자동화 스크립트)
+
+위 1~3번 중 "채널×월별 집계 + 매장별 1:1 매칭 + EVENTS 계산" 부분을 자동화한
+스크립트입니다. 대시보드 파일을 직접 덮어쓰지 않고, 검토용 `.js` 스니펫과
+요약 리포트만 만들어냅니다 (자동 반영보다 사람이 한 번 보고 붙여넣는 쪽이
+안전하다고 판단해서 — 이 문서 5번의 버그들이 전부 "조용히 잘못 계산되는" 유형
+이었던 걸 감안했어요).
+
+```bash
+pip install -r scripts/requirements.txt
+python3 scripts/update_dashboard_data.py \
+  --sales 품목별판매현황.xlsx \
+  --schedule 행사일정.xlsx \
+  --dashboard event_pnl_dashboard.html \
+  --year 2026 --asof 2026-09-04
+```
+
+- `--sales`, `--schedule`는 여러 연도 데이터가 누적된 파일이어도 됩니다 (전년동기
+  매칭에 필요한 2025년 행사/판매 데이터가 같은 파일 안에 있으면 됨).
+- 매장→채널 매핑은 대시보드 HTML의 `STORE_LISTS`를 그대로 읽어서 쓰기 때문에,
+  대시보드에 매장을 추가/변경하면 스크립트도 자동으로 따라갑니다.
+- 결과물: `data_update_output.js`(EVENTS/CHANNEL_TOTAL_REVENUE 등 상수 스니펫),
+  `data_update_report.md`(건수 요약, 전년동기 매칭 실패 건수), `data_update_cancels.csv`
+  (취소 의심 건 - 위 2번 표의 "취소율 계산" 규칙 그대로 진단).
+- 자체 검증: `python3 scripts/test_update_dashboard_data.py` (합성 표본 데이터로
+  집계·계절 매칭·진행중 잠정치·취소 판정·JS 문법을 assert로 확인).
+- **아직 자동화하지 않은 부분**: 온라인/라운지/밀로티의 계획(사전시뮬) 수치,
+  품목별 성과(`PRODUCT_FULL_BY_STORE` 등), `PRODUCT_MATCH_LOTTESHOPPING` — 이 세
+  가지는 이번해 실적만으로 역산할 수 없거나(계획은 별도 출처), 품목명에서
+  "모델명만 추출"하는 정확한 규칙이 아직 코드로 안 굳어져 있어서 잘못 자동화하면
+  오히려 위험하다고 보고 일단 수기 입력으로 남겨뒀습니다.
+
 ## 7. 앞으로 필요한 것 (PPT 로드맵에서 가져옴)
 
 - 온라인/라운지/밀로티 계획(사전시뮬) 데이터 입력 체계

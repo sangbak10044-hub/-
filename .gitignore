@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+scripts/_test_tmp/
+data_update_output.js
+data_update_report.md
+data_update_cancels.csv
