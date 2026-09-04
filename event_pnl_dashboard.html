@@ -318,19 +318,22 @@
   .tip-hint{display:none;width:7px;height:7px;border-radius:50%;background:currentColor;opacity:0.55;flex-shrink:0;margin-left:5px;}
   .has-tip{cursor:help;}
   .has-tip .tip-hint{display:inline-block;}
-  .growth-tooltip{display:none;position:absolute;width:250px;white-space:normal;overflow-wrap:break-word;
+  /* position:fixed + JS(positionTooltip)로 화면 좌표를 직접 계산해서 배치함.
+     예전엔 position:absolute로 .has-tip 기준 상대배치였는데, .channel-card 등
+     조상 요소에 overflow:hidden이 걸려있으면(카드 모서리를 둥글게 자르는 용도)
+     화면 안쪽에 자리가 있어도 카드 경계에서 툴팁이 잘려버리는 문제가 있었음.
+     fixed로 바꾸면 어떤 조상의 overflow에도 걸리지 않고 뷰포트 기준으로만 위치가
+     정해져서, 카드 밖으로 넘어가도 항상 온전히 보임. */
+  .growth-tooltip{display:none;position:fixed;width:250px;white-space:normal;overflow-wrap:break-word;
     background:#1E2761;color:#fff;border-radius:10px;padding:12px 14px;font-size:13px;font-weight:400;
-    text-align:left;box-shadow:0 8px 24px rgba(30,39,97,0.35);z-index:50;line-height:1.5;}
-  /* 기본(아래쪽 표시) */
-  .growth-tooltip.tip-below{top:calc(100% + 8px);right:-10px;}
+    text-align:left;box-shadow:0 8px 24px rgba(30,39,97,0.35);z-index:9999;line-height:1.5;}
+  /* 아래 tip-below/tip-right/tip-left 클래스에는 top/left/right를 안 넣어둠 - positionTooltip()이
+     매번 보이기 직전에 px 단위로 계산해서 inline style로 정확히 배치함(방향 판별에만 클래스명 사용). */
   .growth-tooltip.tip-below::after{content:"";position:absolute;bottom:100%;right:16px;border:6px solid transparent;border-bottom-color:#1E2761;}
   /* 오른쪽으로 표시 (월별 매출 성장률처럼 값이 오른쪽 끝에 있을 때 - 아래 숫자를 안 가리게 오른쪽 여백으로) */
-  .growth-tooltip.tip-right{top:50%;left:calc(100% + 12px);right:auto;transform:translateY(-50%);}
-  .growth-tooltip.tip-right-far{top:50%;left:calc(100% + 36px);right:auto;transform:translateY(-50%);}
   .growth-tooltip.tip-right-far::after{content:"";position:absolute;top:50%;right:100%;transform:translateY(-50%);border:6px solid transparent;border-right-color:#1E2761;}
   .growth-tooltip.tip-right::after{content:"";position:absolute;top:50%;right:100%;transform:translateY(-50%);border:6px solid transparent;border-right-color:#1E2761;}
   /* 왼쪽으로 표시 (채널별 손익비교의 당월 박스처럼 왼쪽에 있을 때 - 오른쪽 숫자를 안 가리게 왼쪽 여백으로) */
-  .growth-tooltip.tip-left{top:50%;right:calc(100% + 12px);left:auto;transform:translateY(-50%);}
   .growth-tooltip.tip-left::after{content:"";position:absolute;top:50%;left:100%;transform:translateY(-50%);border:6px solid transparent;border-left-color:#1E2761;}
   .has-tip:hover .growth-tooltip{display:block;}
   .has-tip.tip-open .growth-tooltip{display:block;}
@@ -4227,23 +4230,38 @@ document.querySelectorAll(".rule-toggle").forEach(btn=>{
 });
 
 populateFilters();
-// 툴팁이 화면 좌우 경계를 넘어가면(예: 맨 왼쪽 칸의 tip-left 툴팁) 원래 방향은 유지한 채 화면 안쪽으로만 살짝 밀어서 잘리지 않게 보정
-function clampTooltip(tip){
-  if (!tip || tip.dataset.clamped === "1") return;
-  requestAnimationFrame(() => {
-    const rect = tip.getBoundingClientRect();
-    const margin = 10;
-    let shiftX = 0;
-    if (rect.left < margin) shiftX = margin - rect.left;
-    else if (rect.right > window.innerWidth - margin) shiftX = (window.innerWidth - margin) - rect.right;
-    if (shiftX !== 0) tip.style.transform = `translate(${shiftX}px, -50%)`;
-    tip.dataset.clamped = "1";
-  });
+// 툴팁(.growth-tooltip)은 position:fixed라 뷰포트 기준 px 좌표를 직접 계산해서 넣어줘야 함.
+// 카드에 걸린 overflow:hidden 등 어떤 조상 요소에도 잘리지 않고, 화면(뷰포트) 경계만 넘지
+// 않게 보정한다. tip-left/tip-right/tip-below 클래스는 "어느 방향으로 열지"만 나타냄.
+function positionTooltip(host){
+  const tip = host.querySelector(".growth-tooltip");
+  if (!tip) return;
+  const hostRect = host.getBoundingClientRect();
+  const margin = 10;
+  const gap = tip.classList.contains("tip-right-far") ? 36 : 12;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left, top;
+  if (tip.classList.contains("tip-left")) {
+    left = hostRect.left - gap - tw;
+    top = hostRect.top + hostRect.height / 2 - th / 2;
+  } else if (tip.classList.contains("tip-right") || tip.classList.contains("tip-right-far")) {
+    left = hostRect.right + gap;
+    top = hostRect.top + hostRect.height / 2 - th / 2;
+  } else { // tip-below(기본) - 호스트 오른쪽 끝에 살짝 걸치듯 아래로
+    left = hostRect.right - tw + 10;
+    top = hostRect.bottom + 8;
+  }
+  left = Math.min(Math.max(left, margin), window.innerWidth - margin - tw);
+  top = Math.min(Math.max(top, margin), window.innerHeight - margin - th);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip.style.right = "auto";
+  tip.style.transform = "none";
 }
 document.addEventListener("mouseover", (e) => {
   const host = e.target.closest(".has-tip");
   if (!host) return;
-  clampTooltip(host.querySelector(".growth-tooltip"));
+  positionTooltip(host);
 });
 // 마우스오버(hover)가 안 되는 터치기기(태블릿·휴대폰으로 보고할 때) 대응 - 탭하면 열리고, 다른 곳을 탭하면 닫힘
 document.addEventListener("click", (e) => {
@@ -4254,7 +4272,11 @@ document.addEventListener("click", (e) => {
   if (!host) return;
   e.preventDefault();
   const nowOpen = host.classList.toggle("tip-open");
-  if (nowOpen) clampTooltip(host.querySelector(".growth-tooltip"));
+  if (nowOpen) positionTooltip(host);
+});
+// 창 크기가 바뀌면(가로/세로 회전 등) 열려있는 툴팁 위치도 다시 계산
+window.addEventListener("resize", () => {
+  document.querySelectorAll(".has-tip.tip-open").forEach(positionTooltip);
 });
 renderAll();
 setUpdatedNow();
