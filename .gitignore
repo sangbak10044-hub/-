@@ -4,3 +4,8 @@ scripts/_test_tmp/
 data_update_output.js
 data_update_report.md
 data_update_cancels.csv
+scripts/watch_config.json
+scripts/.watch_state.json
+scripts/watch_log.txt
+scripts/백업/
+scripts/검토필요/

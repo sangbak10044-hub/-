@@ -264,7 +264,7 @@ def js_value(v):
 
 
 def emit_events_js(events: list[dict]) -> str:
-    lines = ["const EVENTS = ["]
+    lines = ["let EVENTS = ["]  # 대시보드 쪽이 "let"(구글시트 연동 시 재할당)이라 맞춰줌
     key_order = ["name", "month", "channel", "mall", "startDate", "endDate",
                  "profitPlan", "profitActual", "revenuePlan", "revenueActual",
                  "partialRevenue", "partialProfit", "partialDays", "totalDays", "partialTx"]
@@ -282,6 +282,107 @@ def emit_channel_totals_js(totals: dict, year: int, var_name: str, field: str) -
         lines.append(f'  "{ch}": {{ {pairs} }},')
     lines.append("};")
     return "\n".join(lines)
+
+
+def parse_channel_month_const(dashboard_text: str, var_name: str) -> dict:
+    """대시보드에 이미 박혀있는 CHANNEL_TOTAL_REVENUE류 상수를 읽어온다 (덮어쓰기 전 급락/0
+    같은 이상치를 잡아내는 sanity check용). 못 찾으면 빈 dict."""
+    m = re.search(re.escape(f"const {var_name} = {{") + r"(.*?)\n\};", dashboard_text, re.S)
+    if not m:
+        return {}
+    out = {}
+    for ch_m in re.finditer(r'"([^"]+)"\s*:\s*\{([^}]*)\}', m.group(1)):
+        ch, body = ch_m.group(1), ch_m.group(2)
+        out[ch] = {mm.group(1): float(mm.group(2)) for mm in re.finditer(r'"([^"]+)"\s*:\s*([\d.]+)', body)}
+    return out
+
+
+def sanity_check(dashboard_path: str, totals: dict, current_year: int) -> list[str]:
+    """새로 계산한 채널×월 매출이 기존 대시보드 값 대비 이상하게 튀는지(0으로 사라짐,
+    반토막 등) 확인. 자동 반영 전 마지막 안전장치 - 여기서 경고가 나오면 watch_and_update.py는
+    자동 반영하지 않고 사람 확인을 기다린다."""
+    text = Path(dashboard_path).read_text(encoding="utf-8")
+    old = parse_channel_month_const(text, "CHANNEL_TOTAL_REVENUE")
+    new = totals.get(current_year, {})
+    warnings = []
+    for ch, old_by_month in old.items():
+        old_total = old_by_month.get("전체")
+        new_total = (new.get(ch) or {}).get("전체", {}).get("revenue")
+        if old_total is None or not old_total:
+            continue
+        if new_total is None:
+            warnings.append(f"'{ch}' 채널이 새 데이터에서 통째로 사라짐 (기존 {old_total}억)")
+        elif new_total < old_total * 0.5:
+            warnings.append(f"'{ch}' 채널 {current_year}년 전체 매출이 {old_total}억 → {new_total}억으로 급감(50%+ 감소)")
+    return warnings
+
+
+def splice_dashboard(dashboard_text: str, js_blocks: dict[str, str]) -> str:
+    """새로 계산된 EVENTS/CHANNEL_* 블록으로 대시보드 안의 기존 상수 선언을 교체한다.
+    js_blocks 키: EVENTS, CHANNEL_TOTAL_REVENUE, CHANNEL_TOTAL_REVENUE_PRIOR, CHANNEL_MARGIN,
+    CHANNEL_MARGIN_PRIOR. 못 찾은 키는 조용히 건너뛰지 않고 예외를 던짐(자동화 중 대시보드
+    구조가 바뀌어 조용히 반영 안 되는 사고를 막기 위해)."""
+    text = dashboard_text
+    patterns = {
+        # 대시보드의 실제 EVENTS는 `let EVENTS = [...].map(e => ({...}));` 형태로,
+        # 레거시 데이터(revenuePlan/revenueActual 명시 안 된 항목)를 위한 MARGIN_ASSUMPTION
+        # 역산 보정이 뒤에 붙어있음. 새로 생성하는 EVENTS는 모든 필드를 항상 명시적으로
+        # 채우기 때문에 이 보정이 필요 없어서, .map() 래퍼까지 통째로 새 배열로 교체한다.
+        # (한 번 이 스크립트로 갱신되고 나면 .map() 래퍼 없는 단순 배열이 되므로, 둘 다 매치되게 함)
+        "EVENTS": r"let EVENTS = \[.*?\n\](?:\.map\(e => \(\{.*?\}\)\))?;",
+        "CHANNEL_TOTAL_REVENUE": r"const CHANNEL_TOTAL_REVENUE = \{.*?\n\};",
+        "CHANNEL_TOTAL_REVENUE_PRIOR": r"const CHANNEL_TOTAL_REVENUE_PRIOR = \{.*?\n\};",
+        "CHANNEL_MARGIN": r"const CHANNEL_MARGIN = \{.*?\n\};",
+        "CHANNEL_MARGIN_PRIOR": r"const CHANNEL_MARGIN_PRIOR = \{.*?\n\};",
+    }
+    for key, new_block in js_blocks.items():
+        pattern = patterns[key]
+        if not re.search(pattern, text, re.S):
+            raise RuntimeError(f"대시보드에서 '{key}' 블록을 찾지 못했습니다 - 파일 구조가 바뀐 것 같습니다. 자동 반영을 중단합니다.")
+        text = re.sub(pattern, lambda m: new_block, text, count=1, flags=re.S)
+    return text
+
+
+def compute_all(sales_path: str, schedule_path: str, dashboard_path: str,
+                 year: int | None = None, asof: str | None = None) -> dict:
+    """엑셀 2개 → EVENTS/채널 총계/취소진단까지 한번에 계산. CLI(main)와
+    watch_and_update.py(자동 감시)가 같이 쓰는 핵심 로직."""
+    sales = read_excel_validated(sales_path, SALES_REQUIRED_COLS, "판매현황")
+    sales["판매일자"] = pd.to_datetime(sales["판매일자"])
+    schedule = read_excel_validated(schedule_path, SCHEDULE_REQUIRED_COLS, "행사일정")
+    schedule["시작일"] = pd.to_datetime(schedule["시작일"])
+    schedule["종료일"] = pd.to_datetime(schedule["종료일"])
+
+    store_channel = load_store_channel_map(dashboard_path)
+    current_year = year or int(schedule["종료일"].dt.year.max())
+    asof_ts = pd.to_datetime(asof) if asof else pd.Timestamp(dt.date.today())
+
+    all_events = build_event_records(schedule, sales, store_channel)
+    current = [e for e in all_events if e.end.year == current_year]
+    prior = [e for e in all_events if e.end.year == current_year - 1]
+    baseline = match_yoy_baseline(current, prior)
+    unmatched_yoy = sum(1 for i, e in enumerate(current) if e.channel in YOY_CHANNELS and i not in baseline)
+
+    event_dicts = to_event_dicts(current, baseline, asof_ts, sales, store_channel)
+    totals = compute_channel_totals(sales)
+    cancels = cancel_diagnostics(sales)
+
+    js_blocks = {
+        "EVENTS": emit_events_js(event_dicts),
+        "CHANNEL_TOTAL_REVENUE": emit_channel_totals_js(totals, current_year, "CHANNEL_TOTAL_REVENUE", "revenue"),
+        "CHANNEL_TOTAL_REVENUE_PRIOR": emit_channel_totals_js(totals, current_year - 1, "CHANNEL_TOTAL_REVENUE_PRIOR", "revenue"),
+        "CHANNEL_MARGIN": emit_channel_totals_js(totals, current_year, "CHANNEL_MARGIN", "margin"),
+        "CHANNEL_MARGIN_PRIOR": emit_channel_totals_js(totals, current_year - 1, "CHANNEL_MARGIN_PRIOR", "margin"),
+    }
+    return {
+        "event_dicts": event_dicts,
+        "totals": totals,
+        "cancels": cancels,
+        "unmatched_yoy": unmatched_yoy,
+        "current_year": current_year,
+        "asof": asof_ts,
+        "js_blocks": js_blocks,
+    }
 
 
 def build_report(events: list[dict], totals: dict, current_year: int, cancels: pd.DataFrame,
@@ -317,36 +418,16 @@ def main():
     ap.add_argument("--cancels-csv", default="data_update_cancels.csv", help="취소 의심 건 리포트 출력 경로")
     args = ap.parse_args()
 
-    sales = read_excel_validated(args.sales, SALES_REQUIRED_COLS, "판매현황")
-    sales["판매일자"] = pd.to_datetime(sales["판매일자"])
-    schedule = read_excel_validated(args.schedule, SCHEDULE_REQUIRED_COLS, "행사일정")
-    schedule["시작일"] = pd.to_datetime(schedule["시작일"])
-    schedule["종료일"] = pd.to_datetime(schedule["종료일"])
-
-    store_channel = load_store_channel_map(args.dashboard)
-    current_year = args.year or int(schedule["종료일"].dt.year.max())
-    asof = pd.to_datetime(args.asof) if args.asof else pd.Timestamp(dt.date.today())
-
-    all_events = build_event_records(schedule, sales, store_channel)
-    current = [e for e in all_events if e.end.year == current_year]
-    prior = [e for e in all_events if e.end.year == current_year - 1]
-    baseline = match_yoy_baseline(current, prior)
-    unmatched_yoy = sum(1 for i, e in enumerate(current) if e.channel in YOY_CHANNELS and i not in baseline)
-
-    event_dicts = to_event_dicts(current, baseline, asof, sales, store_channel)
-    totals = compute_channel_totals(sales)
-    cancels = cancel_diagnostics(sales)
+    result = compute_all(args.sales, args.schedule, args.dashboard, args.year, args.asof)
+    event_dicts, totals = result["event_dicts"], result["totals"]
+    cancels, unmatched_yoy, current_year = result["cancels"], result["unmatched_yoy"], result["current_year"]
 
     js_chunks = [
-        emit_events_js(event_dicts),
-        "",
-        emit_channel_totals_js(totals, current_year, "CHANNEL_TOTAL_REVENUE", "revenue"),
-        "",
-        emit_channel_totals_js(totals, current_year - 1, "CHANNEL_TOTAL_REVENUE_PRIOR", "revenue"),
-        "",
-        emit_channel_totals_js(totals, current_year, "CHANNEL_MARGIN", "margin"),
-        "",
-        emit_channel_totals_js(totals, current_year - 1, "CHANNEL_MARGIN_PRIOR", "margin"),
+        result["js_blocks"]["EVENTS"], "",
+        result["js_blocks"]["CHANNEL_TOTAL_REVENUE"], "",
+        result["js_blocks"]["CHANNEL_TOTAL_REVENUE_PRIOR"], "",
+        result["js_blocks"]["CHANNEL_MARGIN"], "",
+        result["js_blocks"]["CHANNEL_MARGIN_PRIOR"],
     ]
     Path(args.out).write_text("\n".join(js_chunks) + "\n", encoding="utf-8")
     Path(args.report).write_text(
