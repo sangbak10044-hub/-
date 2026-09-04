@@ -1,0 +1,9 @@
+{
+  "watch_folder": "C:\\Users\\<사용자이름>\\Downloads",
+  "repo_dir": "C:\\Users\\<사용자이름>\\Documents\\다우닝대시보드",
+  "dashboard_filename": "event_pnl_dashboard.html",
+  "sales_glob": "*품목별판매현황*.xlsx",
+  "schedule_glob": "*행사일정*.xlsx",
+  "year": null,
+  "auto_push": true
+}

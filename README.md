@@ -215,6 +215,37 @@ python3 scripts/update_dashboard_data.py \
   "모델명만 추출"하는 정확한 규칙이 아직 코드로 안 굳어져 있어서 잘못 자동화하면
   오히려 위험하다고 보고 일단 수기 입력으로 남겨뒀습니다.
 
+### 6-2. `scripts/watch_and_update.py` (Windows 자동 감시 - 다운로드만 하면 나머지는 자동)
+
+ERP API 직접 연동은 사내 IT/SAP팀 협조가 필요한 별도 프로젝트라 당장은 어렵지만,
+"엑셀을 다운로드 폴더에 받아두기만 하면 그 다음(계산 → 대시보드 반영 → GitHub
+push)은 전부 자동"으로 만드는 건 가능해서 추가했습니다. Windows 작업 스케줄러가
+이 스크립트를 1시간마다 실행해줍니다.
+
+**처음 설정 (한 번만)**
+1. `pip install -r scripts/requirements.txt`
+2. `scripts/watch_config.example.json`을 `scripts/watch_config.json`으로 복사하고
+   `watch_folder`(엑셀을 받는 폴더, 보통 다운로드 폴더)와 `repo_dir`(이 저장소를
+   클론해둔 경로)을 본인 컴퓨터에 맞게 수정
+3. `scripts/register_task.bat` 더블클릭 → "다우닝대시보드자동갱신"이라는 이름으로
+   매시간 실행되는 작업이 Windows 작업 스케줄러에 등록됨 (taskschd.msc에서 확인 가능)
+
+**동작 방식**: 매시간, `watch_folder`에서 파일명에 "품목별판매현황"/"행사일정"이
+들어간 엑셀 중 가장 최근 파일을 찾아서, 지난번과 다르면 자동으로 계산하고
+대시보드 파일에 반영한 뒤 git commit/push까지 합니다. 안전장치로:
+- 반영 전 `node --check`로 생성된 JS 문법을 검증
+- 채널 매출이 기존 대비 갑자기 0이 되거나 반토막나는 등 이상치가 보이면
+  **자동 반영을 보류**하고 `scripts/검토필요/` 폴더에 파일만 남겨둠 (원본은 안 건드림)
+- 실제로 반영하기 전에는 항상 `scripts/백업/`에 이전 버전을 타임스탬프와 함께 남김
+- 처리 내역은 전부 `scripts/watch_log.txt`에 기록됨
+- 자체 검증: `python3 scripts/test_watch_and_update.py`
+
+**한계**: 여전히 ERP에서 엑셀을 "다운로드"하는 사람 손은 필요합니다 (API 연동이
+아니라 폴더 감시 방식이라서). 그리고 이 자동화는 GitHub 저장소까지만 반영하고,
+아티팩트로 배포해둔 버전은 별도로 Claude Code에게 재배포를 요청해야 합니다 —
+장기적으로는 실제 호스팅(GitHub Pages 등)으로 옮기면 git push만으로 배포까지
+한 번에 끝낼 수 있어요 (이 부분은 보안/접근제어 방식과 함께 나중에 결정 예정).
+
 ## 7. 앞으로 필요한 것 (PPT 로드맵에서 가져옴)
 
 - 온라인/라운지/밀로티 계획(사전시뮬) 데이터 입력 체계
